@@ -1,0 +1,14 @@
+services:
+  - type: worker # This is a background worker, not a web server
+    name: telegram-downloader-bot
+    env: python
+    plan: free # Specifies to use the free tier
+    buildCommand: |
+      # Install python dependencies
+      pip install -r requirements.txt
+      # Install ffmpeg using the system package manager
+      apt-get update && apt-get install -y ffmpeg
+    startCommand: python3 bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false # Keep this variable secret
