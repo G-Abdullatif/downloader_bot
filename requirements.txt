@@ -1,3 +1,5 @@
 python-telegram-bot
 yt-dlp
+brotli
+websockets
 Flask

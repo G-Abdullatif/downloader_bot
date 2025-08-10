@@ -148,6 +148,9 @@ def run_yt_dlp_blocking(url: str, outtmpl: str, ctx: DownloadContext, loop: asyn
         "no_warnings": True,
         "ffmpeg_location": shutil.which("ffmpeg") or None,
         "nocheckcertificate": True,
+        
+        # This is the important fix to impersonate a real browser
+        "impersonate": "chrome:windows",
     }
     if extra_opts:
         ydl_opts.update(extra_opts)
@@ -160,7 +163,7 @@ def run_yt_dlp_blocking(url: str, outtmpl: str, ctx: DownloadContext, loop: asyn
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
         return info, filename
-
+    
 # -------------------------
 # Handlers
 # -------------------------
