@@ -148,10 +148,14 @@ def run_yt_dlp_blocking(url: str, outtmpl: str, ctx: DownloadContext, loop: asyn
         "no_warnings": True,
         "ffmpeg_location": shutil.which("ffmpeg") or None,
         "nocheckcertificate": True,
+        # --- ADD THIS LINE ---
+        "force_generic_extractor": True, 
+        # ---------------------
     }
     if extra_opts:
         ydl_opts.update(extra_opts)
 
+    # The rest of the function remains the same...
     if YTDLP_COOKIES and Path(YTDLP_COOKIES).exists():
         ydl_opts["cookiefile"] = YTDLP_COOKIES
 
