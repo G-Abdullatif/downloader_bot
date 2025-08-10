@@ -1,13 +1,13 @@
-# MODIFIED: Changed type to 'web'
 services:
-  - type: web 
+  - type: web
     name: telegram-downloader-bot
-    env: python
-    # plan: free # This line can be removed, the UI handles the instance type
-    buildCommand: |
-      pip install -r requirements.txt
-      apt-get update && apt-get install -y ffmpeg
-    startCommand: python3 bot.py
+    # Switch the environment from 'python' to 'docker'
+    env: docker
+    # Render will automatically detect and build your Dockerfile
+    # buildCommand and startCommand are now defined in the Dockerfile
     envVars:
       - key: BOT_TOKEN
         sync: false
+      # You can add other environment variables here if needed
+      # - key: YTDLP_COOKIES
+      #   value: "" # Set the value in the Render dashboard
