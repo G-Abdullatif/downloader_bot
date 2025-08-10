@@ -8,7 +8,8 @@ Features:
 - Progress updates to the user (periodic).
 - Concurrent downloads limited by a semaphore.
 - Temporary files cleaned up after sending.
-- Uses a hardcoded BOT_TOKEN.
+- Uses environment variables for config (BOT_TOKEN, YTDLP_COOKIES).
+- Includes a Flask web server to keep the service alive on Render.
 """
 
 import os
@@ -19,6 +20,8 @@ import logging
 import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from threading import Thread
+from flask import Flask
 
 import yt_dlp
 from telegram import Update
@@ -34,13 +37,10 @@ from telegram.ext import (
 # -------------------------
 # Configuration
 # -------------------------
-# BOT_TOKEN is now hardcoded in the main() function.
+# BOT_TOKEN is read from environment variables in main()
 YTDLP_COOKIES = os.environ.get("YTDLP_COOKIES")  # optional cookies.txt path
 MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("MAX_CONCURRENT_DOWNLOADS", 2))
-# How often we update progress text (seconds)
 PROGRESS_UPDATE_INTERVAL = float(os.environ.get("PROGRESS_UPDATE_INTERVAL", 2.5))
-# Max filesize to attempt to send via Telegram (we'll check before sending)
-# Keep this None to skip local size limit checks and rely on Telegram API rejection.
 LOCAL_MAX_BYTES = None  # e.g. 50 * 1024 * 1024 for 50MB
 
 # -------------------------
@@ -56,7 +56,6 @@ logger = logging.getLogger(__name__)
 # Globals
 # -------------------------
 _download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
-# single threadpool for blocking yt-dlp operations
 _thread_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS)
 
 # -------------------------
@@ -92,7 +91,6 @@ class DownloadContext:
                 parse_mode=ParseMode.MARKDOWN,
             )
         except Exception:
-            # editing may fail if message deleted or unchanged; ignore
             pass
 
     def _build_status_text(self):
@@ -116,18 +114,14 @@ class DownloadContext:
             s += f"\n⚠️ Error: {self.err}\n"
         return s
 
-# yt-dlp progress hook runs in separate thread -> use this to schedule coroutine
 def make_progress_hook(ctx: DownloadContext, loop: asyncio.AbstractEventLoop):
     def hook(d):
-        # d is a dict provided by yt-dlp
         try:
             if d.get("status") == "downloading":
                 ctx.status = "downloading"
-                # update some fields
                 ctx.info["_downloaded_bytes"] = d.get("downloaded_bytes", d.get("fragment_index"))
                 ctx.info["total_bytes"] = d.get("total_bytes") or d.get("total_bytes_estimate")
                 ctx.info["speed"] = d.get("speed")
-                # schedule periodic_update
                 asyncio.run_coroutine_threadsafe(ctx.periodic_update(), loop)
             elif d.get("status") == "finished":
                 ctx.status = "merging" if d.get("filename", "").endswith(".part") else "finished"
@@ -152,9 +146,7 @@ def run_yt_dlp_blocking(url: str, outtmpl: str, ctx: DownloadContext, loop: asyn
         "progress_hooks": [make_progress_hook(ctx, loop)],
         "quiet": True,
         "no_warnings": True,
-        # Use ffmpeg to merge
         "ffmpeg_location": shutil.which("ffmpeg") or None,
-        # to avoid interactive prompts
         "nocheckcertificate": True,
     }
     if extra_opts:
@@ -166,7 +158,6 @@ def run_yt_dlp_blocking(url: str, outtmpl: str, ctx: DownloadContext, loop: asyn
     logger.info("Starting yt-dlp with options: %s", {k: v for k, v in ydl_opts.items() if k != "progress_hooks"})
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        # prepare filename - yt-dlp might return dict
         filename = ydl.prepare_filename(info)
         return info, filename
 
@@ -203,7 +194,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please send a valid URL (starting with http:// or https://).")
         return
 
-    # limit concurrency
     await update.message.reply_text("Queued your request — waiting for an available downloader slot...")
     async with _download_semaphore:
         await _process_download(update, context, text)
@@ -217,16 +207,14 @@ async def _process_download(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     loop = asyncio.get_event_loop()
     outtmpl = str(temp_dir / "%(title).200s.%(ext)s")
     try:
-        # execute blocking yt-dlp in threadpool
         ctx.status = "preparing"
         fut = loop.run_in_executor(_thread_pool, run_yt_dlp_blocking, url, outtmpl, ctx, loop, None)
-        info, filename = await fut  # wait for download to finish
+        info, filename = await fut
 
         ctx.status = "finished"
         ctx.info["title"] = info.get("title") or Path(filename).stem
         await ctx.periodic_update()
 
-        # Check filesize if configured
         try:
             size = Path(filename).stat().st_size
         except Exception:
@@ -235,18 +223,12 @@ async def _process_download(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if LOCAL_MAX_BYTES and size and size > LOCAL_MAX_BYTES:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=(
-                    "Downloaded file is too large to send via this bot. "
-                    "You can download it manually from your server, or configure larger limit."
-                ),
+                text=("Downloaded file is too large to send via this bot."),
             )
             return
 
-        # Attempt to send - choose send_video or send_document depending
         caption = f"{ctx.info.get('title', '')}\nSource: {url}"
-        # Prefer send_video if it looks like a video and not over size limits
         try:
-            # Telegram may enforce limit; we catch exceptions below
             if filename.lower().endswith((".mp4", ".mkv", ".mov", ".webm")):
                 with open(filename, "rb") as f:
                     await context.bot.send_video(chat_id=chat_id, video=f, caption=caption)
@@ -255,7 +237,6 @@ async def _process_download(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     await context.bot.send_document(chat_id=chat_id, document=f, caption=caption)
         except Exception as e_send:
             logger.exception("Failed to send file: %s", e_send)
-            # try sending as document (raw) if video failed
             try:
                 with open(filename, "rb") as f:
                     await context.bot.send_document(chat_id=chat_id, document=f, caption=caption)
@@ -269,23 +250,42 @@ async def _process_download(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         logger.exception("Unexpected error: %s", e)
         await context.bot.send_message(chat_id=chat_id, text=f"Unexpected error: {e}")
     finally:
-        # cleanup
         try:
             shutil.rmtree(temp_dir)
         except Exception:
             pass
 
 # -------------------------
+# Web Server to Keep Render Alive
+# -------------------------
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive."
+
+def run_web_server():
+    # Runs the Flask app on the port Render provides
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# -------------------------
 # Main
 # -------------------------
 def main():
-    # Reverted to using an environment variable for security
+    # --- Start the web server in a background thread ---
+    web_thread = Thread(target=run_web_server)
+    web_thread.daemon = True
+    web_thread.start()
+    # ---------------------------------------------------
+
+    # Get the bot token from environment variables
     token = os.environ.get("BOT_TOKEN")
     if not token:
         logger.error("Bot token not set. Please set BOT_TOKEN environment variable.")
         raise SystemExit("BOT_TOKEN is required. Set it in your deployment environment.")
 
-    # Added timeouts to allow more time for uploads
+    # Set higher timeouts for uploads
     application = (
         Application.builder()
         .token(token)

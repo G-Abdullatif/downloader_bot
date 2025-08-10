@@ -1,14 +1,13 @@
+# MODIFIED: Changed type to 'web'
 services:
-  - type: worker # This is a background worker, not a web server
+  - type: web 
     name: telegram-downloader-bot
     env: python
-    plan: free # Specifies to use the free tier
+    # plan: free # This line can be removed, the UI handles the instance type
     buildCommand: |
-      # Install python dependencies
       pip install -r requirements.txt
-      # Install ffmpeg using the system package manager
       apt-get update && apt-get install -y ffmpeg
     startCommand: python3 bot.py
     envVars:
       - key: BOT_TOKEN
-        sync: false # Keep this variable secret
+        sync: false
