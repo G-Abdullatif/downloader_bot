@@ -1,3 +1,5 @@
 python-telegram-bot
-yt-dlp[impersonate]
+yt-dlp
+brotli
+websockets
 Flask
